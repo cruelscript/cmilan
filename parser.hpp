@@ -7,6 +7,8 @@
 #include <sstream>
 #include <string>
 #include <map>
+#include <stack>
+#include <list>
 
 using namespace std;
 
@@ -40,7 +42,7 @@ public:
   // Конструктор создает экземпляры лексического анализатора и генератора.
 
   Parser(const string& fileName, istream& input)
-    : output_(cout), error_(false), recovered_(true), lastVar_(0)
+    : output_(cout), error_(false), recovered_(true), lastVar_({0, false})
   {
     scanner_ = new Scanner(fileName, input);
     codegen_ = new CodeGen(output_);
@@ -56,7 +58,8 @@ public:
   void parse();	//проводим синтаксический разбор
 
 private:
-  typedef map<string, int> VarTable;
+  typedef std::pair<int, bool> Variable;
+  typedef map<string, Variable> VarTable;
   //описание блоков.
   void program(); //Разбор программы. BEGIN statementList END
   void statementList(); // Разбор списка операторов.
@@ -79,27 +82,17 @@ private:
   {
     if (scanner_->token() == t)
     {
-      if(scanner_->token() == T_INT)
-      {
-        flag_ = 1;
-      }
-      else if(scanner_->token() == T_FLOAT)
-      {
-        flag_ = 2;
-      }
       scanner_->nextToken();
       return true;
     }
-    else
-    {
-      return false;
-    }
+    return false;
   }
 
   // Переход к следующей лексеме.
 
   void next()
   {
+    lastToken_ = scanner_->token();
     scanner_->nextToken();
   }
 
@@ -114,8 +107,9 @@ private:
   //Иначе создаем сообщение об ошибке и пробуем восстановиться
   void recover(Token t); //восстановление после ошибки: идем по коду до тех пор,
   //пока не встретим эту лексему или лексему конца файла.
-  int findOrAddVariable(const string&); //функция пробегает по variables_.
+  int findVariable(const string&); //функция пробегает по variables_.
   //Если находит нужную переменную - возвращает ее номер, иначе добавляет ее в массив, увеличивает lastVar и возвращает его.
+  int addVariable(const string&, bool isFloat = false);
 
   Scanner* scanner_; //лексический анализатор для конструктора
   CodeGen* codegen_; //указатель на виртуальную машину
@@ -123,8 +117,9 @@ private:
   bool error_; //флаг ошибки. Используется чтобы определить, выводим ли список команд после разбора или нет
   bool recovered_; //не используется
   VarTable variables_; //массив переменных, найденных в программе
-  int lastVar_; //номер последней записанной переменной
-  int flag_ = 0; // флаг, обозначающий к какому типу нужно неявно приводить (0 - тип не меняется, 1 - int, 2 - float)
+  Variable lastVar_; //номер последней записанной переменной
+  list<bool> isFloatCast; // флаг, обозначающий к какому типу нужно неявно приводить (0 - тип не меняется, 1 - int, 2 - float)
+  Token lastToken_;
 };
 
 #endif

@@ -1,9 +1,11 @@
 #include "parser.hpp"
 #include <sstream>
 #include "scanner.hpp"
+#include <algorithm>
 
 //Выполняем синтаксический разбор блока program. Если во время разбора не обнаруживаем
 //никаких ошибок, то выводим последовательность команд стек-машины
+
 void Parser::parse()
 {
   program();
@@ -27,10 +29,9 @@ void Parser::statementList()
   //	  В этом случае результатом разбора будет пустой блок (его список операторов равен null).
   //	  Если очередная лексема не входит в этот список, то ее мы считаем началом оператора и вызываем метод statement.
   //    Признаком последнего оператора является отсутствие после оператора точки с запятой.
+
   if (see(T_END) || see(T_OD) || see(T_ELSE) || see(T_FI))
-  {
-    return;
-  }
+  {}
   else
   {
     bool more = true;
@@ -47,11 +48,27 @@ void Parser::statement()
   // Если встречаем переменную, то запоминаем ее адрес или добавляем новую если не встретили.
   // Следующей лексемой должно быть присваивание. Затем идет блок expression, который возвращает значение на вершину стека.
   // Записываем это значение по адресу нашей переменной
-  if (match(T_INT) || match(T_FLOAT))
+
+  if (match(T_INT))
   {
     mustBe(T_IDENTIFIER);
-    int varAddress = findOrAddVariable(scanner_->getStringValue());
-    //next();
+    int varAddress = addVariable(scanner_->getStringValue());
+    mustBe(T_ASSIGN);
+    expression();
+    codegen_->emit(STORE, varAddress);
+  }
+  else if (match(T_FLOAT))
+  {
+    mustBe(T_IDENTIFIER);
+    int varAddress = addVariable(scanner_->getStringValue(), true);
+    mustBe(T_ASSIGN);
+    expression();
+    codegen_->emit(STORE, varAddress);
+  }
+
+  else if (match(T_IDENTIFIER))
+  {
+    int varAddress = findVariable(scanner_->getStringValue());
     mustBe(T_ASSIGN);
     expression();
     codegen_->emit(STORE, varAddress);
@@ -178,42 +195,70 @@ void Parser::factor()
   */
   if (see(T_NUMBER))
   {
-    switch (flag_)
-    {
-    case 2:
-      codegen_->emit(PUSH, static_cast<float>(scanner_->getIntValue()));
-      flag_ = 0;
-      break;
-    case 1:
-    default:
-      codegen_->emit(PUSH, scanner_->getIntValue());
-      flag_ = 0;
-      break;
-    }
     next();
+    if(see(T_ADDOP) || see(T_MULOP) || see(T_CMP))
+    {
+      if(!isFloatCast.empty())
+      {
+        if(isFloatCast.front())
+        {
+          codegen_->emit(PUSH, static_cast<float>(scanner_->getIntValue()));
+        }
+      }
+      else codegen_->emit(PUSH, scanner_->getIntValue());
+    }
+    else if(lastVar_.second)
+    {
+      codegen_->emit(PUSH, static_cast<float>(scanner_->getIntValue()));
+    }
+    else codegen_->emit(PUSH, scanner_->getIntValue());
+    isFloatCast.erase(isFloatCast.begin(), isFloatCast.end());
   }
   else if(see(T_RNUMBER))
   {
-    switch (flag_)
+    if (lastToken_ == T_MULOP || lastToken_ == T_ADDOP || lastToken_ == T_CMP)
     {
-    case 1:
-      codegen_->emit(PUSH, static_cast<int>(scanner_->getFloatValue()));
-      flag_ = 0;
-      break;
-    case 2:
-    default:
       codegen_->emit(PUSH, scanner_->getFloatValue());
-      flag_ = 0;
-      break;
+      next();
+      return;
     }
     next();
+    if (see(T_ADDOP) || see(T_MULOP) || see(T_CMP))
+    {
+      if (!isFloatCast.empty())
+      {
+        int val = 0;
+        if (any_of(isFloatCast.begin(), isFloatCast.end(), [] (bool s) { return !s;}))
+        {
+          val = static_cast<int>(scanner_->getFloatValue());
+          if (isFloatCast.front())
+          {
+            codegen_->emit(PUSH, static_cast<float>(val));
+          }
+          else codegen_->emit(PUSH, val);
+        }
+      }
+      else codegen_->emit(PUSH, scanner_->getFloatValue());
+    }
+    else if (lastVar_.second)
+    {
+      int val = 0;
+      if (any_of(isFloatCast.begin(), isFloatCast.end(), [](bool s) { return !s; }))
+      {
+        val = static_cast<int>(scanner_->getFloatValue());
+        codegen_->emit(PUSH, static_cast<float>(val));
+      }
+      else codegen_->emit(PUSH, scanner_->getFloatValue());
+    }
+    else codegen_->emit(PUSH, static_cast<int>(scanner_->getFloatValue()));
+    isFloatCast.erase(isFloatCast.begin(), isFloatCast.end());
   }
 
     //Если встретили число, то записываем на вершину стека
 
   else if (see(T_IDENTIFIER))
   {
-    int varAddress = findOrAddVariable(scanner_->getStringValue());
+    int varAddress = findVariable(scanner_->getStringValue());
     next();
     codegen_->emit(LOAD, varAddress);
     //Если встретили переменную, то выгружаем значение, лежащее по ее адресу, на вершину стека
@@ -230,19 +275,20 @@ void Parser::factor()
     if(see(T_INT))
     {
       next();
-      flag_ = 1;
+      isFloatCast.push_back(false);
       mustBe(T_RPAREN);
       expression();
     }
     else if(see(T_FLOAT))
     {
       next();
-      flag_ = 2;
+      isFloatCast.push_back(true);
       mustBe(T_RPAREN);
       expression();
     }
     else
     {
+      isFloatCast.erase(isFloatCast.begin(), isFloatCast.end());
       expression();
       mustBe(T_RPAREN);
     }
@@ -304,18 +350,32 @@ void Parser::relation()
   }
 }
 
-int Parser::findOrAddVariable(const string& var)
+int Parser::findVariable(const string& var)
 {
-  VarTable::iterator it = variables_.find(var);
+  auto it = variables_.find(var);
   if (it == variables_.end())
   {
-    variables_[var] = lastVar_;
-    return lastVar_++;
+    reportError("Variable '" + var + "' has not been declared.");
   }
   else
   {
-    return it->second;
+    return it->second.first;
   }
+}
+
+int Parser::addVariable(const string& var, bool isFloat)
+{
+  auto it = variables_.find(var);
+  if (it == variables_.end())
+  {
+    lastVar_.second = isFloat;
+    variables_[var] = lastVar_;
+  }
+  else
+  {
+    reportError("Variable '" + var + "' has been already declared.");
+  }
+  return lastVar_.first++;
 }
 
 void Parser::mustBe(Token t)

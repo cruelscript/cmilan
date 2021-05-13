@@ -106,7 +106,7 @@ void Scanner::nextToken()
       while(isdigit(ch_))
       {
         fval += factor * (ch_ - '0');
-        factor *= factor;
+        factor *= 0.1;
         nextChar();
       }
       token_ = T_RNUMBER;
@@ -257,7 +257,7 @@ void Scanner::nextToken()
         while (isdigit(ch_))
         {
           fval += factor * (ch_ - '0');
-          factor *= factor;
+          factor *= 0.1;
           nextChar();
         }
         token_ = T_RNUMBER;
